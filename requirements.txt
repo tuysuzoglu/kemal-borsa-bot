@@ -1,5 +1,2 @@
-yfinance
-pandas
-python-telegram-bot
-Flask
+flask
 requests
