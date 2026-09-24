@@ -1,8 +1,6 @@
 """
-AKILLI KRIPTO BOT - TEST MODU - DUZELTILMIS VERSIYON
-- Hardcoded token kaldirildi (güvenli)
-- /start, /durum, /bakiye komutlari eklendi
-- Render'da 7/24 calisir
+AKILLI KRIPTO BOT - EKRANLI VERSIYON
+/ linkine girince dashboard gorunur
 """
 import os
 import time
@@ -12,28 +10,19 @@ from datetime import datetime, date
 from flask import Flask
 import requests
 
-# --- AYARLAR ---
 BUDGET_TL = 5000.0
 USE_PERCENT = 0.25
 DAILY_LIMIT = 200
-PROFIT_TRIGGER = 3.0
-TRAILING_DROP = 0.8
+PROFIT_TRIGGER = 1.0  # HIZLI TEST ICIN %1 yaptik
+TRAILING_DROP = 0.3   # HIZLI TEST ICIN %0.3 yaptik
 
-# GUVENLIK: Token asla koda yazilmaz, sadece Render Environment'dan gelir
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")
-if not BOT_TOKEN:
-    print("UYARI: BOT_TOKEN bulunamadi! Render Environment'a ekleyin.")
-
 TEST_MODE = os.getenv("TEST_MODE", "True") == "True"
 
 TRADE_LOG = "trade_history.json"
 STATE_FILE = "bot_state.json"
 
 app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return f"BOT AKTIF - TEST_MODE={TEST_MODE} - {datetime.now()} - Komutlar: /start /durum /bakiye"
 
 def load_json(path, default):
     try:
@@ -48,8 +37,8 @@ def save_json(path, data):
     try:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"Kayit hatasi: {e}")
+    except:
+        pass
 
 def get_btc_price_tl():
     try:
@@ -73,9 +62,81 @@ def send_telegram(chat_id, text):
     except Exception as e:
         print(f"Telegram hata: {e}")
 
-# --- TELEGRAM KOMUTLARI ICIN POLLING ---
+# --- DASHBOARD HTML ---
+@app.route('/')
+def home():
+    state = load_json(STATE_FILE, {"balance": BUDGET_TL, "daily_count": 0, "position": None})
+    history = load_json(TRADE_LOG, [])
+    price = get_btc_price_tl()
+    
+    pos = state.get("position")
+    if pos and price:
+        entry = pos['entry_price']
+        pnl = (price - entry) / entry * 100
+        max_p = pos.get('max_price', entry)
+        drop = (max_p - price) / max_p * 100 if max_p else 0
+        pos_html = f"""
+        <div style="background:#1e3a2e;color:#4ade80;padding:15px;border-radius:10px;margin:10px 0">
+            <b>📈 POZISYONDA</b><br>
+            Giriş: {entry:,.2f} TL<br>
+            Şimdi: {price:,.2f} TL<br>
+            Max: {max_p:,.2f} TL<br>
+            Kar: %{pnl:.3f}<br>
+            Zirveden düşüş: %{drop:.3f}
+        </div>
+        """
+    else:
+        pos_html = f"""<div style="background:#3a3a1e;color:#facc15;padding:15px;border-radius:10px;margin:10px 0">Pozisyon YOK - Alım bekleniyor - Fiyat: {price:,.2f} TL</div>""" if price else "<div>Fiyat alınamadı</div>"
+
+    # son 10 işlem
+    trades_html = ""
+    for t in reversed(history[-10:]):
+        color = "#4ade80" if t['pnl'] > 0 else "#f87171"
+        trades_html += f"<div style='border-bottom:1px solid #333;padding:8px;display:flex;justify-content:space-between'><span>{t['time'][11:19]} - {t['reason']}</span><span style='color:{color}'>{t['pnl']:.2f} TL (%{t['pnl_percent']:.2f})</span></div>"
+    if not trades_html:
+        trades_html = "<div style='padding:10px;color:#888'>Henüz işlem yok</div>"
+
+    total_pnl = sum(t['pnl'] for t in history)
+    win = len([t for t in history if t['pnl']>0])
+    total = len(history)
+
+    html = f"""
+    <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="refresh" content="10">
+    <title>Akıllı Kripto Bot</title>
+    <style>body{{font-family:system-ui;background:#0f0f0f;color:#eee;margin:0;padding:15px}} .card{{background:#1a1a1a;border-radius:12px;padding:15px;margin:10px 0;border:1px solid #333}} h1{{font-size:20px}} .big{{font-size:28px;font-weight:bold}}</style>
+    </head><body>
+    <h1>🚀 Akıllı Kripto Bot - CANLI PANEL</h1>
+    <div style="color:#888">Otomatik yenilenir (10 sn) - {datetime.now().strftime('%H:%M:%S')}</div>
+    
+    <div class="card">
+        <div>Bakiye</div><div class="big">{state.get('balance',BUDGET_TL):,.2f} TL</div>
+        <div style="display:flex;gap:20px;margin-top:10px">
+            <div>Toplam Kar: <b style="color:{'#4ade80' if total_pnl>=0 else '#f87171'}">{total_pnl:.2f} TL</b></div>
+            <div>İşlem: {total} | Kazanan: {win}</div>
+            <div>Günlük: {state.get('daily_count',0)}/{DAILY_LIMIT}</div>
+        </div>
+        <div style="margin-top:8px;color:#888">Mod: {'TEST - Sanal' if TEST_MODE else 'LIVE'} | Tetik: %{PROFIT_TRIGGER} | Trailing: %{TRAILING_DROP}</div>
+    </div>
+
+    {pos_html}
+
+    <div class="card">
+        <b>📜 Son İşlemler</b>
+        {trades_html}
+    </div>
+
+    <div class="card" style="color:#888;font-size:13px">
+        Bot link: https://akilli-kripto-bot.onrender.com<br>
+        Telegram: @kemal_borsa_bot - Komutlar: /start /durum /bakiye /fiyat
+    </div>
+    </body></html>
+    """
+    return html
+
+# --- TELEGRAM POLLING ---
 last_update_id = 0
-user_chat_id = None  # son mesaj atan kisinin id'si
+user_chat_id = None
 
 def telegram_polling():
     global last_update_id, user_chat_id
@@ -85,55 +146,38 @@ def telegram_polling():
             if not BOT_TOKEN:
                 time.sleep(10)
                 continue
-            
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update_id+1}&timeout=30"
             r = requests.get(url, timeout=35)
             if r.status_code != 200:
-                if r.status_code == 401:
-                    print("HATA: BOT_TOKEN gecersiz! BotFather'dan yeni token alip Render'a ekleyin.")
                 time.sleep(5)
                 continue
-            
             data = r.json()
             if not data.get("ok"):
                 time.sleep(5)
                 continue
-
             for upd in data.get("result", []):
                 last_update_id = upd["update_id"]
                 msg = upd.get("message")
-                if not msg:
-                    continue
-                
+                if not msg: continue
                 chat_id = msg["chat"]["id"]
                 text = msg.get("text","").strip()
-                user_chat_id = chat_id  # hatirla
-
+                user_chat_id = chat_id
                 state = load_json(STATE_FILE, {"daily_count":0, "last_date":str(date.today()), "balance":BUDGET_TL, "position":None, "max_price":0})
                 price = get_btc_price_tl()
-
                 if text == "/start":
-                    send_telegram(chat_id, f"🚀 *Akilli Kripto Bot Aktif!*\n\nMod: {'TEST - Sanal Para' if TEST_MODE else 'LIVE - Gercek Para'}\nButce: {BUDGET_TL} TL\nKasa Kullanimi: %{USE_PERCENT*100}\nKar Tetik: %{PROFIT_TRIGGER}\nTrailing: %{TRAILING_DROP}\nGunluk Limit: {DAILY_LIMIT}\n\nKomutlar:\n/durum - Anlik durum\n/bakiye - Bakiye ve pozisyon\n/fiyat - BTC/TRY fiyati\n/stop - Botu durdur (manuel)\n\nBot su an calisiyor ✅")
-
+                    send_telegram(chat_id, f"🚀 *Akilli Kripto Bot Aktif!*\n\nBakiye: {state['balance']:.2f} TL\nPanel: https://akilli-kripto-bot.onrender.com\n\nKomutlar:\n/durum\n/bakiye\n/fiyat")
                 elif text == "/durum":
                     pos = state.get("position")
                     if pos:
                         pnl = (price - pos['entry_price'])/pos['entry_price']*100 if price else 0
-                        send_telegram(chat_id, f"📊 *Durum*\nFiyat: {price:.2f} TL\nGiris: {pos['entry_price']:.2f} TL\nKar: %{pnl:.2f}\nMax: {pos['max_price']:.2f}\nGunluk Islem: {state['daily_count']}/{DAILY_LIMIT}")
+                        send_telegram(chat_id, f"📊 Fiyat: {price:.2f} TL\nGiris: {pos['entry_price']:.2f} TL\nKar: %{pnl:.2f}\nBakiye: {state['balance']:.2f}")
                     else:
-                        send_telegram(chat_id, f"📊 *Durum*\nFiyat: {price:.2f} TL\nPozisyon: YOK - Alim bekleniyor\nBakiye: {state['balance']:.2f} TL\nGunluk: {state['daily_count']}/{DAILY_LIMIT}")
-
+                        send_telegram(chat_id, f"📊 Fiyat: {price:.2f} TL\nPozisyon: YOK\nBakiye: {state['balance']:.2f}")
                 elif text == "/bakiye":
-                    send_telegram(chat_id, f"💰 Bakiye: {state['balance']:.2f} TL\nGunluk Islem: {state['daily_count']}")
-
+                    send_telegram(chat_id, f"💰 Bakiye: {state['balance']:.2f} TL")
                 elif text == "/fiyat":
-                    send_telegram(chat_id, f"₿ BTC/TRY: {price:.2f} TL" if price else "Fiyat alinamadi")
-
-                elif text.startswith("/"):
-                    send_telegram(chat_id, "Bilinmeyen komut. /start yaz")
-
+                    send_telegram(chat_id, f"₿ {price:.2f} TL" if price else "Fiyat yok")
             time.sleep(1)
-
         except Exception as e:
             print(f"Polling hata: {e}")
             time.sleep(5)
@@ -141,33 +185,18 @@ def telegram_polling():
 class SelfLearningEngine:
     def __init__(self):
         self.history = load_json(TRADE_LOG, [])
-
     def add_trade(self, trade):
         self.history.append(trade)
         self.history = self.history[-500:]
         save_json(TRADE_LOG, self.history)
-
     def get_optimized_params(self):
-        if len(self.history) < 20:
-            return PROFIT_TRIGGER, TRAILING_DROP
-        recent = self.history[-50:]
-        wins = [t for t in recent if t['pnl'] > 0]
-        win_rate = len(wins) / len(recent) * 100
-        if win_rate < 45:
-            new_trailing = min(1.5, TRAILING_DROP + 0.1)
-        elif win_rate > 65:
-            new_trailing = max(0.4, TRAILING_DROP - 0.1)
-        else:
-            new_trailing = TRAILING_DROP
-        print(f"[LEARNING] WinRate %{win_rate:.1f} - Trailing %{new_trailing:.2f}")
-        return PROFIT_TRIGGER, new_trailing
+        return PROFIT_TRIGGER, TRAILING_DROP
 
 engine = SelfLearningEngine()
 
 def trading_loop():
     print(f"BOT BASLADI - TEST_MODE={TEST_MODE}")
     state = load_json(STATE_FILE, {"daily_count":0, "last_date":str(date.today()), "balance":BUDGET_TL, "position":None, "max_price":0})
-    
     while True:
         try:
             today_str = str(date.today())
@@ -175,57 +204,38 @@ def trading_loop():
                 state['daily_count'] = 0
                 state['last_date'] = today_str
                 save_json(STATE_FILE, state)
-
             if state['daily_count'] >= DAILY_LIMIT:
                 time.sleep(3600)
                 continue
-
             price = get_btc_price_tl()
             if price is None:
                 time.sleep(10)
                 continue
-
             profit_trigger, trailing_drop = engine.get_optimized_params()
-
             if state['position'] is None:
                 amount_tl = state['balance'] * USE_PERCENT
                 if amount_tl < 100:
                     time.sleep(60)
                     continue
-                
                 qty = amount_tl / price
-                commission = amount_tl * 0.001
-                
-                state['position'] = {
-                    "entry_price": price,
-                    "qty": qty,
-                    "entry_tl": amount_tl,
-                    "entry_time": datetime.now().isoformat(),
-                    "max_price": price
-                }
+                state['position'] = {"entry_price": price, "qty": qty, "entry_tl": amount_tl, "entry_time": datetime.now().isoformat(), "max_price": price}
                 state['max_price'] = price
-                print(f"[AL] {price:.2f} TL - {qty:.6f} BTC")
+                print(f"[AL] {price:.2f}")
                 if user_chat_id:
-                    send_telegram(user_chat_id, f"🟢 *AL* {price:.2f} TL - {amount_tl:.2f} TL'lik alim")
+                    send_telegram(user_chat_id, f"🟢 AL {price:.2f} TL - {amount_tl:.2f} TL")
                 save_json(STATE_FILE, state)
-            
             else:
                 entry = state['position']['entry_price']
                 max_p = state['position']['max_price']
-                
                 if price > max_p:
                     state['position']['max_price'] = price
                     max_p = price
-                
                 pnl_percent = (price - entry) / entry * 100
                 max_pnl = (max_p - entry) / entry * 100
                 drop_from_max = (max_p - price) / max_p * 100
-
-                print(f"[TAKIP] Kar %{pnl_percent:.2f} | Max %{max_pnl:.2f} | Zirveden -%{drop_from_max:.3f}")
-
+                print(f"[TAKIP] %{pnl_percent:.2f} | Max %{max_pnl:.2f} | -%{drop_from_max:.3f}")
                 should_sell = False
                 reason = ""
-
                 if max_pnl >= profit_trigger:
                     if drop_from_max >= trailing_drop:
                         should_sell = True
@@ -234,40 +244,22 @@ def trading_loop():
                     if pnl_percent <= -2.5:
                         should_sell = True
                         reason = f"Stop %{pnl_percent:.2f}"
-
                 if should_sell:
                     qty = state['position']['qty']
                     exit_tl = qty * price
                     entry_tl = state['position']['entry_tl']
-                    commission = (entry_tl + exit_tl) * 0.001
-                    pnl_tl = exit_tl - entry_tl - commission
-                    
+                    pnl_tl = exit_tl - entry_tl - (entry_tl+exit_tl)*0.001
                     state['balance'] += pnl_tl
                     state['daily_count'] += 1
-
-                    trade = {
-                        "entry": entry,
-                        "exit": price,
-                        "max": max_p,
-                        "pnl_percent": pnl_percent,
-                        "pnl": pnl_tl,
-                        "commission": commission,
-                        "reason": reason,
-                        "time": datetime.now().isoformat(),
-                        "test": TEST_MODE
-                    }
+                    trade = {"entry": entry, "exit": price, "max": max_p, "pnl_percent": pnl_percent, "pnl": pnl_tl, "commission": (entry_tl+exit_tl)*0.001, "reason": reason, "time": datetime.now().isoformat(), "test": TEST_MODE}
                     engine.add_trade(trade)
-                    
-                    print(f"[SAT] {reason} | {pnl_tl:.2f} TL")
+                    print(f"[SAT] {reason} | {pnl_tl:.2f}")
                     if user_chat_id:
-                        send_telegram(user_chat_id, f"🔴 *SAT* {reason}\nKar: {pnl_tl:.2f} TL\nBakiye: {state['balance']:.2f} TL")
-                    
+                        send_telegram(user_chat_id, f"🔴 SAT {reason}\nKar: {pnl_tl:.2f} TL\nBakiye: {state['balance']:.2f}")
                     state['position'] = None
                     state['max_price'] = 0
                     save_json(STATE_FILE, state)
-
             time.sleep(20)
-
         except Exception as e:
             print(f"Hata: {e}")
             time.sleep(10)
